@@ -1,0 +1,85 @@
+#!/bin/python3
+import json
+import sys
+import tempfile
+import os
+from contextlib import contextmanager
+
+@contextmanager
+def tempfile_with_data(data):
+    (handle, path) = tempfile.mkstemp(prefix="pp-commit-tmp-", text=True)
+    os.write(handle, str.encode(data))
+    os.close(handle)
+    try:
+        yield path
+    finally:
+        os.remove(path)
+
+class CommandError(RuntimeError):
+    pass
+
+class CommitGenerator:
+    def __init__(self, path):
+        self.path = path
+        self._user_info = None
+
+    def generate_pp_commit(self, user_ids):
+        co_authored_by = "\n".join([self.get_co_authored_by(user_id) for user_id in user_ids])
+        return f"\n\n{co_authored_by}\n"
+
+    def get_co_authored_by(self, user_id):
+        user_info = self._get_user_info()
+        try:
+            user = user_info[user_id]
+            return f"Co-authored-by: {user['name']} <{user['email']}>"
+        except KeyError as e:
+            raise CommandError(f"Missing user id '{user_id}' in user info data")
+
+    
+    def _get_user_info(self):
+        if self._user_info is None:
+            data = CommitGenerator.load_user_info(self.path)
+            self._user_info = data["users"]
+        return self._user_info
+
+    @staticmethod
+    def load_user_info(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    
+    @staticmethod
+    def find_cfg():
+        paths = [
+            "./.pp-commit.cfg",
+            os.path.expanduser("~/.pp-commit.cfg")
+        ]
+        for path in paths:
+            if os.path.isfile(path):
+                return path
+        raise CommandError("Could not find config file.")
+
+def parse_args(args):
+    if len(args) < 2:
+        raise CommandError("Too few arguments. Missing user id.")
+    return args[1:]
+
+def main(args):
+    try:
+        user_ids = parse_args(args)
+
+        cfg_path = CommitGenerator.find_cfg()
+        generator = CommitGenerator(cfg_path)
+        template_data = generator.generate_pp_commit(user_ids)
+
+        with tempfile_with_data(template_data) as path:
+            os.system(f"git commit -t '{path}'")
+    except CommandError as ce:
+        print(f"Error: {str(ce)}")
+        print(
+            f"Command format: {args[0]} <user_id_0> <user_id_1> ...\n"
+            f" - Example: {args[0]} mattias eric"
+        )
+
+
+if __name__ == "__main__":
+    main(sys.argv)
